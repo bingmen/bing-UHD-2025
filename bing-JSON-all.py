@@ -1,18 +1,22 @@
-# bing-JSON-all.py
+# bing-JSON-all-0.0.1.yml
 # github.com/shenjuexiao
-# 20261021
+# 20261022
 
 # bing-JSON-all.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 Bing 每日壁纸 UHD 下载与 Markdown 生成脚本
 根据 bing-JSON-{mkt}-{year}.json 数据下载 UHD 超清图与 320x240 缩略图，并生成 Markdown 索引。
+
+用法：
+    python bing-JSON-all.py --mkt zh-CN --year 2025
+    python bing-JSON-all.py --mkt en-US --year 2025 --out-dir ./output
 """
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -84,18 +88,14 @@ def sanitize_title(title: str) -> str:
     """将标题转换为适合文件名的形式：去掉非法字符、空格转下划线。"""
     if not title:
         return "untitled"
-    # 去掉 Windows / POSIX 不允许的字符
     cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "", title)
-    # 去除首尾空白与多余空格
     cleaned = re.sub(r"\s+", "_", cleaned.strip())
-    # 去掉结尾的点与下划线
     cleaned = cleaned.strip("._")
-    # 防止空
     return cleaned or "untitled"
 
 
 def format_date(enddate: str) -> str:
-    """'YYYYMMDD' -> 'YYYY-MM-DD'"""
+    """'YYYYMMDD' -> 'YYYY-MM-DD'；若已是 YYYY-MM-DD 则原样返回。"""
     if len(enddate) == 8 and enddate.isdigit():
         return f"{enddate[0:4]}-{enddate[4:6]}-{enddate[6:8]}"
     return enddate
@@ -106,7 +106,7 @@ def ensure_dir(path: Path) -> None:
 
 
 def download_image(url: str, dest: Path, retries: int = 3) -> bool:
-    """下载图片到 dest，成功返回 True。已存在则跳过。"""
+    """下载图片到 dest，成功返回 True。已存在且非空则跳过。"""
     if dest.exists() and dest.stat().st_size > 0:
         return True
 
@@ -127,7 +127,7 @@ def download_image(url: str, dest: Path, retries: int = 3) -> bool:
 # ---------------------------------------------------------------- 主流程
 
 def process_item(item: dict, mkt: str, year: str,
-                 uhd_dir: Path, thumb_dir: Path) -> dict:
+                 uhd_dir: Path, thumb_dir: Path) -> dict | None:
     """处理单条 JSON 记录，返回 Markdown 行所需信息。"""
     startdate = item.get("startdate", "")
     enddate = item.get("enddate", startdate)
@@ -135,14 +135,14 @@ def process_item(item: dict, mkt: str, year: str,
     copyright_ = item.get("copyright", "")
     url_path = item.get("url", "")
 
-    # 去掉查询参数后缀（&rf=...&pid=...），得到纯 id
+    # 去掉查询参数后缀（&rf=...&pid=...），得到纯 id 路径
     base_url_path = url_path.split("&")[0] if url_path else ""
 
     # 构造 UHD / 320 的 URL
     uhd_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', 'UHD.jpg')}"
     thumb_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', '320x240.jpg')}"
 
-    # 文件名
+    # 文件名（用 startdate 作为日期前缀）
     safe_title = sanitize_title(title)
     uhd_name = f"{startdate}_{safe_title}_UHD_{mkt}.jpg"
     thumb_name = f"{startdate}_320_{mkt}.jpg"
@@ -150,7 +150,7 @@ def process_item(item: dict, mkt: str, year: str,
     uhd_dest = uhd_dir / uhd_name
     thumb_dest = thumb_dir / thumb_name
 
-    # 下载 UHD，若失败则回退到 1920x1080
+    # 下载 UHD，失败则回退到 1920x1080
     uhd_ok = download_image(uhd_url, uhd_dest)
     if not uhd_ok:
         print(f"  [回退] UHD 不存在，尝试 1920x1080：{startdate}")
@@ -164,20 +164,20 @@ def process_item(item: dict, mkt: str, year: str,
     if not thumb_ok:
         print(f"  [跳过] 缩略图无法下载：{startdate}")
 
-    # 仅当缩略图与 UHD 至少有一个成功时，才写入 Markdown
+    # 至少有一张成功才写入 Markdown
     if not uhd_ok and not thumb_ok:
         return None
 
     date_display = format_date(enddate)
 
-    # 缩略图链接（CDN）
+    # 缩略图 CDN 链接
     cdn_thumb = f"{CDN_BASE.format(year=year)}/bing-320-{mkt}-{year}/{thumb_name}"
 
-    # UHD 链接文字：ww.bing.com/th?id=
+    # UHD 链接文字：www.bing.com/th?id={图片ID}
     uhd_id = ""
     if "id=" in base_url_path:
         uhd_id = base_url_path.split("id=", 1)[1]
-    uhd_link_text = f"ww.bing.com/th?id={uhd_id}"
+    uhd_link_text = f"www.bing.com/th?id={uhd_id}"
 
     return {
         "startdate": startdate,
@@ -224,7 +224,6 @@ def main() -> int:
 
     print(f"[信息] 已加载 {len(data)} 条记录：{json_file}")
 
-    # 目录
     uhd_dir = out_root / f"bing-UHD-{mkt}-{year}"
     thumb_dir = out_root / f"bing-320-{mkt}-{year}"
     ensure_dir(uhd_dir)
@@ -259,7 +258,7 @@ def main() -> int:
     for r in results:
         md_lines.append(
             f"| {r['date_display']} | {r['title']} | {r['copyright']} "
-            f"| [![Thumb]({r['cdn_thumb']})]({r['cdn_thumb']}) "
+            f"| ![{r['title']}]({r['cdn_thumb']}) "
             f"| [{r['uhd_link_text']}](https://{r['uhd_link_text']}) |"
         )
 
