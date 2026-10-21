@@ -39,10 +39,35 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 增加 HTTP 缓冲区，缓解大数据量推送时的传输问题
+          git config http.postBuffer 524288000
+          
           git add bing-UHD-* bing-320-* "bing-UHD-*.md"
+          
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
             git commit -m "chore: update bing wallpapers $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
-            git push
+            
+            # 重试推送逻辑（最多 3 次，间隔递增）
+            max_retries=3
+            retry_delay=10
+            
+            for i in $(seq 1 $max_retries); do
+              echo "Push attempt $i of $max_retries..."
+              if git push; then
+                echo "Push succeeded."
+                break
+              else
+                echo "Push failed with exit code $?. Retrying in ${retry_delay}s..."
+                sleep $retry_delay
+                retry_delay=$((retry_delay * 2))  # 指数退避
+              fi
+              
+              if [ $i -eq $max_retries ]; then
+                echo "Push failed after $max_retries attempts."
+                exit 1
+              fi
+            done
           fi
