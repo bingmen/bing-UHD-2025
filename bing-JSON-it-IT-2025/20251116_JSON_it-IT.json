@@ -1,0 +1,28 @@
+{
+  "LastUpdate": "2026-10-20 05:09:05",
+  "Total": 1,
+  "Language": "it-IT",
+  "message": "ok",
+  "status": true,
+  "success": true,
+  "info": "https://raw.onmicrosoft.cn/Bing-Wallpaper-Action/main/data/info.json",
+  "data": [
+    {
+      "startdate": "20251115",
+      "fullstartdate": "202511152300",
+      "enddate": "20251116",
+      "url": "/th?id=OHR.LyonTraboules_IT-IT5997023386_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+      "urlbase": "/th?id=OHR.LyonTraboules_IT-IT5997023386",
+      "copyright": "Un traboule a Lione, Francia (© TPopova/Getty Images)",
+      "copyrightlink": "https://www.bing.com/search?q=Traboule&form=hpcapt",
+      "title": "Passaggi segreti?",
+      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20251115_LyonTraboules%22&FORM=HPQUIZ",
+      "wp": true,
+      "hsh": "b0e44d01c4b7b71787c1d9978cf27cdf",
+      "drk": 1,
+      "top": 1,
+      "bot": 1,
+      "hs": []
+    }
+  ]
+}
