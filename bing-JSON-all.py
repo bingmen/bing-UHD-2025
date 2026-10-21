@@ -1,6 +1,6 @@
-# bing-JSON-all-0.0.1.yml
+# bing-JSON-all-0.0.2.yml
 # github.com/shenjuexiao
-# 20261022
+# 20261023
 
 # bing-JSON-all.py
 #!/usr/bin/env python3
@@ -9,15 +9,15 @@
 """
 Bing 每日壁纸 UHD 下载与 Markdown 生成脚本
 根据 bing-JSON-{mkt}-{year}.json 数据下载 UHD 超清图与 320x240 缩略图，并生成 Markdown 索引。
-数据不存在时只生成表头。
 """
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -85,17 +85,14 @@ def sanitize_title(title: str) -> str:
     """将标题转换为适合文件名的形式：去掉非法字符、空格转下划线。"""
     if not title:
         return "untitled"
+    # 去掉 Windows / POSIX 不允许的字符
     cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]', "", title)
+    # 去除首尾空白与多余空格
     cleaned = re.sub(r"\s+", "_", cleaned.strip())
+    # 去掉结尾的点与下划线
     cleaned = cleaned.strip("._")
+    # 防止空
     return cleaned or "untitled"
-
-
-def escape_md_cell(text: str) -> str:
-    """转义 Markdown 表格单元格中的竖线。"""
-    if text is None:
-        return ""
-    return str(text).replace("|", "\\|")
 
 
 def format_date(enddate: str) -> str:
@@ -131,102 +128,67 @@ def download_image(url: str, dest: Path, retries: int = 3) -> bool:
 # ---------------------------------------------------------------- 主流程
 
 def process_item(item: dict, mkt: str, year: str,
-                 uhd_dir: Path, thumb_dir: Path):
-    """处理单条 JSON 记录，返回 Markdown 行所需信息；全部下载失败返回 None。"""
+                 uhd_dir: Path, thumb_dir: Path) -> dict:
+    """处理单条 JSON 记录，返回 Markdown 行所需信息。"""
     startdate = item.get("startdate", "")
-    enddate = item.get("enddate", startdate)
+    enddate = item.get("enddate", startdate)   # 若缺失则回退 startdate
     title = item.get("title", "")
     copyright_ = item.get("copyright", "")
     url_path = item.get("url", "")
 
-    # 去掉查询参数后缀，得到纯 id 路径
+    # 去掉查询参数后缀（&rf=...&pid=...），得到纯 id
     base_url_path = url_path.split("&")[0] if url_path else ""
 
-    # 构造 UHD / 1920x1080 / 320x240 URL
+    # 构造 UHD / 320 的 URL
     uhd_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', 'UHD.jpg')}"
-    fallback_url = f"{BING_BASE}{base_url_path}"
     thumb_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', '320x240.jpg')}"
 
+    # 统一使用 enddate 作为文件名日期（图片与表格一致）
+    date_key = enddate or startdate
     safe_title = sanitize_title(title)
-
-    # UHD 文件名（区分 UHD 与回退 1920x1080）
-    uhd_name = f"{startdate}_{safe_title}_UHD_{mkt}.jpg"
-    fallback_name = f"{startdate}_{safe_title}_1920x1080_{mkt}.jpg"
-    thumb_name = f"{startdate}_320_{mkt}.jpg"
+    uhd_name = f"{date_key}_{safe_title}_UHD_{mkt}.jpg"
+    thumb_name = f"{date_key}_320_{mkt}.jpg"
 
     uhd_dest = uhd_dir / uhd_name
-    fallback_dest = uhd_dir / fallback_name
     thumb_dest = thumb_dir / thumb_name
 
-    # 先尝试 UHD
+    # 下载 UHD，若失败则回退到 1920x1080
     uhd_ok = download_image(uhd_url, uhd_dest)
-    final_url = uhd_url
-    final_name = uhd_name
-
     if not uhd_ok:
-        print(f"  [回退] UHD 不存在，尝试 1920x1080：{startdate}")
-        fallback_ok = download_image(fallback_url, fallback_dest)
-        if fallback_ok:
-            uhd_ok = True
-            final_url = fallback_url
-            final_name = fallback_name
-        else:
-            # 清理可能的空 UHD 文件
-            if uhd_dest.exists() and uhd_dest.stat().st_size == 0:
-                uhd_dest.unlink(missing_ok=True)
-            print(f"  [跳过] UHD 与 1920x1080 均无法下载：{startdate}")
+        print(f"  [回退] UHD 不存在，尝试 1920x1080：{date_key}")
+        fallback_url = f"{BING_BASE}{base_url_path}"
+        uhd_ok = download_image(fallback_url, uhd_dest)
+        if not uhd_ok:
+            print(f"  [跳过] UHD 与 1920x1080 均无法下载：{date_key}")
 
     # 下载缩略图
     thumb_ok = download_image(thumb_url, thumb_dest)
     if not thumb_ok:
-        print(f"  [跳过] 缩略图无法下载：{startdate}")
+        print(f"  [跳过] 缩略图无法下载：{date_key}")
 
-    # 仅当缩略图与（UHD/回退）至少有一个成功时，才写入 Markdown
+    # 仅当缩略图与 UHD 至少有一个成功时，才写入 Markdown
     if not uhd_ok and not thumb_ok:
         return None
 
-    date_display = format_date(enddate)
+    date_display = format_date(date_key)
 
-    # 缩略图 CDN 链接
+    # 缩略图链接（CDN）
     cdn_thumb = f"{CDN_BASE.format(year=year)}/bing-320-{mkt}-{year}/{thumb_name}"
 
-    # UHD 列：链接文字固定为 "UHD"，指向实际下载成功的 UHD 或回退地址
-    uhd_link = final_url
+    # UHD 链接文字：ww.bing.com/th?id=
+    uhd_id = ""
+    if "id=" in base_url_path:
+        uhd_id = base_url_path.split("id=", 1)[1]
+    uhd_link_text = f"ww.bing.com/th?id={uhd_id}"
 
     return {
-        "startdate": startdate,
+        "startdate": date_key,          # 用于排序，统一为 enddate
         "date_display": date_display,
         "title": title,
         "copyright": copyright_,
         "cdn_thumb": cdn_thumb,
-        "uhd_link": uhd_link,
-        "final_name": final_name,
+        "uhd_link_text": uhd_link_text,
     }
-
-
-def write_markdown(mkt: str, year: str, out_root: Path, results: list) -> Path:
-    """生成 Markdown 文件（全量重建）。"""
-    md_lines = []
-    md_lines.append(f"# {H1[mkt]} - UHD - {mkt} - {year}")
-    md_lines.append("")
-    utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    md_lines.append(f"> {LAST_UPDATED[mkt]}：{utc_now} UTC")
-    md_lines.append("")
-    md_lines.append(TABLE_HEADERS[mkt])
-    md_lines.append(TABLE_SEPARATOR)
-
-    for r in results:
-        md_lines.append(
-            f"| {escape_md_cell(r['date_display'])} "
-            f"| {escape_md_cell(r['title'])} "
-            f"| {escape_md_cell(r['copyright'])} "
-            f"| ![title]({r['cdn_thumb']}) "
-            f"| [UHD]({r['uhd_link']}) |"
-        )
-
-    md_path = out_root / f"bing-UHD-{mkt}-{year}.md"
-    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-    return md_path
 
 
 def main() -> int:
@@ -251,26 +213,22 @@ def main() -> int:
         out_root / f"bing-JSON-{mkt}-{year}.json"
     )
 
+    if not json_file.exists():
+        print(f"[错误] JSON 文件不存在：{json_file}")
+        return 1
+
+    with open(json_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        print("[错误] JSON 根节点应为数组")
+        return 1
+
+    print(f"[信息] 已加载 {len(data)} 条记录：{json_file}")
+
     # 目录
     uhd_dir = out_root / f"bing-UHD-{mkt}-{year}"
     thumb_dir = out_root / f"bing-320-{mkt}-{year}"
-
-    # ---- 读取 JSON；不存在或为空则只生成表头 ----
-    data = []
-    if json_file.exists():
-        try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, list):
-                data = loaded
-                print(f"[信息] 已加载 {len(data)} 条记录：{json_file}")
-            else:
-                print(f"[警告] JSON 根节点不是数组，按空数据处理：{json_file}")
-        except Exception as e:  # noqa: BLE001
-            print(f"[警告] JSON 解析失败，按空数据处理：{json_file} ({e})")
-    else:
-        print(f"[信息] JSON 文件不存在，仅生成表头：{json_file}")
-
     ensure_dir(uhd_dir)
     ensure_dir(thumb_dir)
 
@@ -287,17 +245,36 @@ def main() -> int:
         if row:
             results.append(row)
 
-    # 按 startdate 倒序
+    # 按日期倒序（date_key 已统一为 enddate）
     results.sort(key=lambda r: r["startdate"], reverse=True)
 
-    md_path = write_markdown(mkt, year, out_root, results)
+    # 生成 Markdown
+    md_lines = []
+    md_lines.append(f"# {H1[mkt]} – UHD - {mkt} - {year}")
+    md_lines.append("")
+    utc_now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    md_lines.append(f"> {LAST_UPDATED[mkt]}：{utc_now} UTC")
+    md_lines.append("")
+    md_lines.append(TABLE_HEADERS[mkt])
+    md_lines.append(TABLE_SEPARATOR)
+
+    for r in results:
+        md_lines.append(
+            f"| {r['date_display']} | {r['title']} | {r['copyright']} "
+            f"| [![Thumb]({r['cdn_thumb']})]({r['cdn_thumb']}) "
+            f"| [{r['uhd_link_text']}](https://{r['uhd_link_text']}) |"
+        )
+
+    md_path = out_root / f"bing-UHD-{mkt}-{year}.md"
+    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     print(f"[完成] Markdown 已写入：{md_path}")
     print(f"[完成] UHD 图片目录：{uhd_dir}")
     print(f"[完成] 缩略图目录：{thumb_dir}")
-    print(f"[完成] 条目数：{len(results)}")
 
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
