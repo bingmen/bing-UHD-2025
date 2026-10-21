@@ -1,6 +1,6 @@
 # Sfondo giornaliero di Bing – UHD - it-IT - 2025
 
-> Ultimo aggiornamento：2026-10-21 07:57:30 UTC
+> Ultimo aggiornamento：2026-10-21 08:30:13 UTC
 
 | Data | Titolo | Copyright | Miniatura | Immagine UHD |
 | --- | --- | --- | --- | --- |
