@@ -14,75 +14,41 @@ on:
   workflow_dispatch:
     inputs:
       mkt:
-        description: '市场代码（留空则运行全部）'
-        required: false
-        default: ''
-      year:
-        description: '年份（留空则处理该 mkt 全部年份）'
-        required: false
-        default: ''
+        description: 'Market (e.g. zh-CN)'
+        required: true
+        default: 'zh-CN'
+        type: choice
+        options:
+          - de-DE
+          - en-CA
+          - en-GB
+          - en-IN
+          - en-US
+          - fr-FR
+          - it-IT
+          - ja-JP
+          - zh-CN
 
 permissions:
   contents: write
 
 jobs:
-  # 计算需要运行的 (mkt, year) 组合
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - id: gen
-        shell: bash
-        run: |
-          MKTS="de-DE en-CA en-GB en-IN en-US fr-FR it-IT ja-JP zh-CN"
-          INPUT_MKT="${{ github.event.inputs.mkt }}"
-          INPUT_YEAR="${{ github.event.inputs.year }}"
-
-          ITEMS=()
-          if [ -n "$INPUT_MKT" ]; then
-            # 手动指定 mkt
-            if [ -n "$INPUT_YEAR" ]; then
-              ITEMS+=("{\"mkt\":\"$INPUT_MKT\",\"year\":\"$INPUT_YEAR\"}")
-            else
-              for f in bing-JSON-$INPUT_MKT-*.json; do
-                [ -e "$f" ] || continue
-                y=$(echo "$f" | sed -E 's/.*-([0-9]{4})\.json$/\1/')
-                ITEMS+=("{\"mkt\":\"$INPUT_MKT\",\"year\":\"$y\"}")
-              done
-            fi
-          else
-            # 自动扫描所有存在的 json
-            for mkt in $MKTS; do
-              for f in bing-JSON-$mkt-*.json; do
-                [ -e "$f" ] || continue
-                y=$(echo "$f" | sed -E 's/.*-([0-9]{4})\.json$/\1/')
-                ITEMS+=("{\"mkt\":\"$mkt\",\"year\":\"$y\"}")
-              done
-            done
-          fi
-
-          if [ ${#ITEMS[@]} -eq 0 ]; then
-            MATRIX='{"include":[]}'
-          else
-            JOINED=$(IFS=,; echo "${ITEMS[*]}")
-            MATRIX="{\"include\":[$JOINED]}"
-          fi
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "Matrix: $MATRIX"
-
-  # 每个 (mkt, year) 一个并行任务
   process:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      matrix:
+        mkt:
+          - de-DE
+          - en-CA
+          - en-GB
+          - en-IN
+          - en-US
+          - fr-FR
+          - it-IT
+          - ja-JP
+          - zh-CN
 
     steps:
       - name: Checkout
@@ -95,54 +61,89 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 临时调大 Git 缓冲区至 500MB
       - name: Increase Git buffer (500MB)
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.version HTTP/1.1
 
-      - name: Run bing-JSON-single.py (${{ matrix.mkt }} ${{ matrix.year }})
-        run: python bing-JSON-single.py "${{ matrix.mkt }}" "${{ matrix.year }}"
+      - name: Run bing-JSON-single.py (${{ matrix.mkt }})
+        run: python bing-JSON-single.py ${{ matrix.mkt }}
 
-      - name: Commit & Push
+      # 分批 add + commit + push；stash 放循环外，push 前 pull --rebase，push 失败不吞错
+      - name: Commit & Push (batched, ${{ matrix.mkt }})
         run: |
+          set -euo pipefail
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           MKT="${{ matrix.mkt }}"
-          YEAR="${{ matrix.year }}"
 
+          # 循环外先 stash 一次：把未跟踪/未暂存改动收进 stash（若无改动则跳过）
+          if ! git diff --quiet || ! git diff --cached --quiet || \
+             [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            git stash push --include-untracked -m "pre-batch-stash-${MKT}-$(date -u +%s)"
+            echo "Stashed pre-existing changes"
+          else
+            echo "Nothing to stash"
+          fi
+
+          # 用 find 收集目标文件（仅当前 mkt），按 NUL 分隔，过滤空项
           FILES=()
           while IFS= read -r -d '' f; do
             [ -n "$f" ] && FILES+=("$f")
-          done < <(find . -maxdepth 1 \
-                    \( -name "bing-UHD-${MKT}-${YEAR}.md" \
-                       -o -path "./bing-UHD-${MKT}-${YEAR}/*" \
-                       -o -path "./bing-320-${MKT}-${YEAR}/*" \) -print0 2>/dev/null || true)
+          done < <(find . -maxdepth 1 -type f \
+                    \( -name "bing-UHD-${MKT}-*" -o -name "bing-320-${MKT}-*" -o -name "bing-UHD-${MKT}-*.md" \) \
+                    -print0 2>/dev/null || true)
 
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No target files, skip"
-            exit 0
+            echo "No target files found for ${MKT}, skip"
+          else
+            BATCH=20
+            TOTAL=${#FILES[@]}
+            echo "Total files: $TOTAL, batch size: $BATCH"
+            for ((i=0; i<TOTAL; i+=BATCH)); do
+              CHUNK=("${FILES[@]:i:BATCH}")
+              CLEAN=()
+              for x in "${CHUNK[@]}"; do
+                [ -n "$x" ] && CLEAN+=("$x")
+              done
+              [ ${#CLEAN[@]} -eq 0 ] && continue
+
+              git add -- "${CLEAN[@]}"
+              if git diff --cached --quiet; then
+                echo "Batch $((i/BATCH+1)): no changes"
+                continue
+              fi
+              git commit -m "chore(${MKT}): update bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+
+              # 每次 push 前重新 pull --rebase
+              git pull --rebase origin "${GITHUB_REF_NAME}"
+
+              # push 失败明确报错（set -e 已保证非零退出）
+              if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                echo "::error::git push failed for ${MKT} batch $((i/BATCH+1))"
+                exit 1
+              fi
+              echo "Batch $((i/BATCH+1)) pushed (${#CLEAN[@]} files)"
+            done
           fi
 
-          # 拉取最新，避免与并行 job 冲突
-          git pull --rebase origin "${GITHUB_REF_NAME}" || true
-
-          BATCH=20
-          TOTAL=${#FILES[@]}
-          for ((i=0; i<TOTAL; i+=BATCH)); do
-            CHUNK=("${FILES[@]:i:BATCH}")
-            CLEAN=()
-            for x in "${CHUNK[@]}"; do
-              [ -n "$x" ] && CLEAN+=("$x")
-            done
-            [ ${#CLEAN[@]} -eq 0 ] && continue
-
-            git add -- "${CLEAN[@]}"
-            if git diff --cached --quiet; then
-              echo "Batch $((i/BATCH+1)): no changes"
-              continue
+          # 兜底：提交剩余变更（如删除项、其他文件）
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No remaining changes"
+          else
+            git commit -m "chore(${MKT}): update bing wallpapers (final) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "::error::git push failed for ${MKT} final"
+              exit 1
             fi
-            git commit -m "chore(${MKT}-${YEAR}): bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
-            git pull --rebase origin "${GITHUB_REF_NAME}" || true
-            git push
-          done
+          fi
+
+          # 恢复循环外 stash 的改动（若有）
+          if git stash list | grep -q "pre-batch-stash-${MKT}"; then
+            git stash pop || echo "::warning::stash pop failed, left in stash list"
+          fi
