@@ -48,19 +48,20 @@ LAST_UPDATED = {
     "zh-CN": "最后更新",
 }
 
+# 表格改为 4 列：日期 | 标题 | 版权 | 缩略图（图片链接到 UHD/回退地址，alt 文字为标题）
 TABLE_HEADERS = {
-    "de-DE": "| Datum | Titel | Urheberrecht | Vorschaubild | UHD-Bild |",
-    "en-CA": "| Date | Title | Copyright | Thumbnail | UHD image |",
-    "en-GB": "| Date | Title | Copyright | Thumbnail | UHD image |",
-    "en-IN": "| Date | Title | Copyright | Thumbnail | UHD image |",
-    "en-US": "| Date | Title | Copyright | Thumbnail | UHD image |",
-    "fr-FR": "| Date | Titre | Droits d'auteur | Vignette | Image UHD |",
-    "it-IT": "| Data | Titolo | Copyright | Miniatura | Immagine UHD |",
-    "ja-JP": "| 日付 | タイトル | 著作権 | サムネイル | UHD 画像 |",
-    "zh-CN": "| 日期 | 标题 | 版权 | 缩略图 | UHD 图像 |",
+    "de-DE": "| Datum | Titel | Urheberrecht | Vorschaubild |",
+    "en-CA": "| Date | Title | Copyright | Thumbnail |",
+    "en-GB": "| Date | Title | Copyright | Thumbnail |",
+    "en-IN": "| Date | Title | Copyright | Thumbnail |",
+    "en-US": "| Date | Title | Copyright | Thumbnail |",
+    "fr-FR": "| Date | Titre | Droits d'auteur | Vignette |",
+    "it-IT": "| Data | Titolo | Copyright | Miniatura |",
+    "ja-JP": "| 日付 | タイトル | 著作権 | サムネイル |",
+    "zh-CN": "| 日期 | 标题 | 版权 | 缩略图 |",
 }
 
-TABLE_SEPARATOR = "| :---: | :---: | :---: | :---: | :---: |"
+TABLE_SEPARATOR = "| :---: | :---: | :---: | :---: |"
 
 BING_BASE = "https://www.bing.com"
 CDN_BASE = "https://cdn.jsdelivr.net/gh/bingmen/bing-UHD-{year}@main"
@@ -128,18 +129,16 @@ def download_image(url: str, dest: Path, retries: int = 3) -> bool:
 # ---------------------------------------------------------------- 主流程
 
 def process_item(item: dict, mkt: str, year: str,
-                 uhd_dir: Path, thumb_dir: Path):
-    """处理单条 JSON 记录，返回 Markdown 行所需信息。
-
-    统一使用 enddate 作为"日期"（文件名、表格显示、排序均以此为准），
-    若 enddate 缺失则回退到 startdate。
-    """
+                 uhd_dir: Path, thumb_dir: Path) -> dict:
+    """处理单条 JSON 记录，返回 Markdown 行所需信息。"""
     startdate = item.get("startdate", "")
-    # 优先使用 enddate；缺失或为空时回退到 startdate
-    date_key = item.get("enddate") or startdate
+    enddate = item.get("enddate", startdate) or startdate
     title = item.get("title", "")
     copyright_ = item.get("copyright", "")
     url_path = item.get("url", "")
+
+    # 下载与表格统一使用 enddate 作为日期标识
+    date_key = enddate
 
     # 去掉查询参数后缀（&rf=...&pid=...），得到纯 id
     base_url_path = url_path.split("&")[0] if url_path else ""
@@ -148,7 +147,7 @@ def process_item(item: dict, mkt: str, year: str,
     uhd_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', 'UHD.jpg')}"
     thumb_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', '320x240.jpg')}"
 
-    # 文件名统一使用 date_key
+    # 文件名（统一使用 enddate）
     safe_title = sanitize_title(title)
     uhd_name = f"{date_key}_{safe_title}_UHD_{mkt}.jpg"
     thumb_name = f"{date_key}_320_{mkt}.jpg"
@@ -156,17 +155,17 @@ def process_item(item: dict, mkt: str, year: str,
     uhd_dest = uhd_dir / uhd_name
     thumb_dest = thumb_dir / thumb_name
 
-    # 下载 UHD，若失败则回退到 1920x1080；记录实际使用的 URL
+    # 下载 UHD，若失败则回退到 1920x1080；记录实际使用的下载地址
+    actual_download_url = uhd_url
     uhd_ok = download_image(uhd_url, uhd_dest)
-    used_uhd_url = uhd_url
     if not uhd_ok:
         print(f"  [回退] UHD 不存在，尝试 1920x1080：{date_key}")
         fallback_url = f"{BING_BASE}{base_url_path}"
-        used_uhd_url = fallback_url
+        actual_download_url = fallback_url
         uhd_ok = download_image(fallback_url, uhd_dest)
         if not uhd_ok:
             print(f"  [跳过] UHD 与 1920x1080 均无法下载：{date_key}")
-            used_uhd_url = None
+            actual_download_url = None
 
     # 下载缩略图
     thumb_ok = download_image(thumb_url, thumb_dest)
@@ -177,18 +176,23 @@ def process_item(item: dict, mkt: str, year: str,
     if not uhd_ok and not thumb_ok:
         return None
 
-    date_display = format_date(date_key)
+    date_display = format_date(enddate)
 
-    # 缩略图链接（CDN）
+    # 缩略图链接（CDN），使用 enddate
     cdn_thumb = f"{CDN_BASE.format(year=year)}/bing-320-{mkt}-{year}/{thumb_name}"
 
+    # 图片链接：优先 UHD/回退下载地址；若 UHD 失败则退化为 CDN 缩略图
+    image_link = actual_download_url or cdn_thumb
+
     return {
+        "startdate": startdate,
+        "enddate": enddate,
         "date_key": date_key,
         "date_display": date_display,
         "title": title,
         "copyright": copyright_,
         "cdn_thumb": cdn_thumb,
-        "used_uhd_url": used_uhd_url,
+        "image_link": image_link,
     }
 
 
@@ -236,7 +240,7 @@ def main() -> int:
     results = []
     for idx, item in enumerate(data, 1):
         startdate = item.get("startdate", "")
-        enddate = item.get("enddate") or startdate
+        enddate = item.get("enddate", startdate) or startdate
         title = item.get("title", "")
         print(f"[{idx}/{len(data)}] {enddate} - {title}")
         try:
@@ -247,8 +251,8 @@ def main() -> int:
         if row:
             results.append(row)
 
-    # 按日期（enddate）倒序
-    results.sort(key=lambda r: r["date_key"], reverse=True)
+    # 按 enddate 倒序（表格日期以 enddate 展示）
+    results.sort(key=lambda r: r["enddate"], reverse=True)
 
     # 生成 Markdown
     md_lines = []
@@ -261,15 +265,11 @@ def main() -> int:
     md_lines.append(TABLE_SEPARATOR)
 
     for r in results:
-        # 第 5 列：链接文字固定为 UHD，链接指向实际下载地址（UHD 或回退的 1920x1080）
-        if r["used_uhd_url"]:
-            uhd_cell = f"[UHD]({r['used_uhd_url']})"
-        else:
-            uhd_cell = "UHD"
+        # 第4列：图片（显示 CDN 缩略图）作为链接，点击跳转到 UHD/回退下载地址；
+        # alt 文字使用 title，即“链接文字 = title”
         md_lines.append(
             f"| {r['date_display']} | {r['title']} | {r['copyright']} "
-            f"| [![Thumb]({r['cdn_thumb']})]({r['cdn_thumb']}) "
-            f"| {uhd_cell} |"
+            f"| [![{r['title']}]({r['cdn_thumb']})]({r['image_link']}) |"
         )
 
     md_path = out_root / f"bing-UHD-{mkt}-{year}.md"
