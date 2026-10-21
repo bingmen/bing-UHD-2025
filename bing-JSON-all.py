@@ -4,17 +4,27 @@
 
 # bing-JSON-all.py
 #!/usr/bin/env python3
-"""Download Bing daily wallpapers (UHD + 320 thumbnails) and build Markdown tables."""
+# -*- coding: utf-8 -*-
 
-import json
+"""
+根据 bing-JSON-{mkt}-{year}.json 数据
+下载 UHD 高清图到 bing-UHD-{mkt}-{year}/ 目录
+下载 320x240 缩略图到 bing-320-{mkt}-{year}/ 目录
+图片命名：YYYYMMDD_title_UHD_{mkt}.jpg / YYYYMMDD_320_{mkt}.jpg
+按照 {mkt}，生成 bing-UHD-{mkt}-{year}.md
+"""
+
+import os
 import re
-import sys
+import json
 import time
-from datetime import datetime
-from pathlib import Path
+import glob
+import datetime
+import urllib.request
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-
+# ---------------- 配置 ----------------
 MKTS = ["de-DE", "en-CA", "en-GB", "en-IN", "en-US",
         "fr-FR", "it-IT", "ja-JP", "zh-CN"]
 
@@ -54,113 +64,173 @@ TABLE_HEADERS = {
     "zh-CN": "| 日期 | 标题 | 版权 | 缩略图 | UHD 图像 |",
 }
 
-SEP = "| --- | --- | --- | --- | --- |"
+TABLE_SEPARATOR = "| --- | --- | --- | --- | --- |"
 
-BING = "https://www.bing.com"
-UHD_PARAMS = "&pid=hp&w=3840&h=2160&rs=1&c=4"
-THUMB_PARAMS = "&pid=hp&w=320&h=240&rs=1&c=4"
-CDN = "https://cdn.jsdelivr.net/gh/bingmen/bing-UHD-{year}@main"
+BING_BASE = "https://www.bing.com"
+THUMB_SUFFIX = "_320x240.jpg"
+UHD_SUFFIX = "_UHD.jpg"
 
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "Mozilla/5.0 (bing-JSON-all/1.0)"})
-
-
-def slug(text: str, maxlen: int = 60) -> str:
-    """Make a filesystem-safe slug from a title."""
-    text = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", text, flags=re.UNICODE)
-    text = re.sub(r"_+", "_", text).strip("_")
-    return text[:maxlen] or "wallpaper"
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/124.0 Safari/537.36")
+MAX_WORKERS = 8
+RETRY = 3
 
 
-def download(url: str, dest: Path, retries: int = 3) -> bool:
-    if dest.exists() and dest.stat().st_size > 0:
-        print(f"  skip (exists): {dest.name}")
+# ---------------- 工具函数 ----------------
+def sanitize_filename(name: str) -> str:
+    """把 title 处理为安全文件名"""
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "", name)
+    name = re.sub(r"\s+", "-", name.strip())
+    return name[:80] if name else "untitled"
+
+
+def http_download(url: str, dest: str) -> bool:
+    """下载 url 到 dest，带重试"""
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return True
-    for attempt in range(1, retries + 1):
+    for attempt in range(1, RETRY + 1):
         try:
-            with SESSION.get(url, timeout=60, stream=True) as r:
-                r.raise_for_status()
-                tmp = dest.with_suffix(dest.suffix + ".part")
-                with open(tmp, "wb") as f:
-                    for chunk in r.iter_content(65536):
-                        f.write(chunk)
-                tmp.replace(dest)
-            print(f"  ok: {dest.name} ({dest.stat().st_size // 1024} KB)")
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=60) as resp, \
+                    open(dest, "wb") as f:
+                f.write(resp.read())
             return True
-        except Exception as e:  # noqa: BLE001
-            print(f"  attempt {attempt} failed for {dest.name}: {e}")
-            if attempt < retries:
-                time.sleep(2 * attempt)
+        except Exception as e:
+            print(f"[retry {attempt}/{RETRY}] {url} -> {e}")
+            time.sleep(2 * attempt)
     return False
 
 
-def process(mkt: str, year: int, root: Path) -> None:
-    json_path = root / f"bing-JSON-{mkt}-{year}.json"
-    if not json_path.exists():
-        print(f"[{mkt}] missing {json_path.name}, skipping")
+def build_urls(item: dict):
+    """从 JSON item 构造 缩略图 与 UHD 的 URL"""
+    base = item.get("urlbase", "")
+    if not base:
+        return None, None
+    thumb_url = f"{BING_BASE}{base}{THUMB_SUFFIX}"
+    uhd_url = f"{BING_BASE}{base}{UHD_SUFFIX}"
+    return thumb_url, uhd_url
+
+
+def format_date(enddate: str) -> str:
+    """'20261020' -> '2026-10-20'"""
+    try:
+        return datetime.datetime.strptime(enddate, "%Y%m%d").strftime("%Y-%m-%d")
+    except Exception:
+        return enddate
+
+
+# ---------------- 主流程 ----------------
+def process_mkt_year(mkt: str, year: str, json_path: str):
+    """处理单个 mkt + year"""
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    items = data.get("data", [])
+    print(f"[{mkt} {year}] 共 {len(items)} 条记录")
+
+    uhd_dir = f"bing-UHD-{mkt}-{year}"
+    thumb_dir = f"bing-320-{mkt}-{year}"
+    os.makedirs(uhd_dir, exist_ok=True)
+    os.makedirs(thumb_dir, exist_ok=True)
+
+    # 下载任务
+    tasks = []  # (kind, url, dest)
+    for item in items:
+        sd = item.get("startdate", "")
+        if not sd.startswith(year):
+            continue
+        title = sanitize_filename(item.get("title", ""))
+        uhd_name = f"{sd}_{title}_UHD_{mkt}.jpg"
+        thumb_name = f"{sd}_320_{mkt}.jpg"
+        uhd_url, thumb_url = build_urls(item)
+        # 注意：build_urls 返回 (thumb, uhd)
+        thumb_url, uhd_url = build_urls(item)
+        if thumb_url:
+            tasks.append((thumb_url, os.path.join(thumb_dir, thumb_name)))
+        if uhd_url:
+            tasks.append((uhd_url, os.path.join(uhd_dir, uhd_name)))
+
+    # 并行下载
+    ok, fail = 0, 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [ex.submit(http_download, url, dest) for url, dest in tasks]
+        for fut in as_completed(futures):
+            if fut.result():
+                ok += 1
+            else:
+                fail += 1
+    print(f"[{mkt} {year}] 下载完成: 成功 {ok}, 失败 {fail}")
+
+    # 生成 Markdown
+    lines = []
+    lines.append(f"# {H1[mkt]} – UHD - {mkt} - {year}")
+    lines.append("")
+    lines.append(f"> {LAST_UPDATED[mkt]}：{datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    lines.append("")
+    lines.append(TABLE_HEADERS[mkt])
+    lines.append(TABLE_SEPARATOR)
+
+    # 按 enddate 倒序
+    sorted_items = sorted(
+        [x for x in items if x.get("startdate", "").startswith(year)],
+        key=lambda x: x.get("enddate", ""),
+        reverse=True,
+    )
+
+    for item in sorted_items:
+        sd = item.get("startdate", "")
+        enddate_fmt = format_date(item.get("enddate", ""))
+        title = item.get("title", "").replace("|", "\\|")
+        copyright_ = item.get("copyright", "").replace("|", "\\|")
+
+        title_slug = sanitize_filename(item.get("title", ""))
+        uhd_file = f"{sd}_{title_slug}_UHD_{mkt}.jpg"
+        thumb_file = f"{sd}_320_{mkt}.jpg"
+
+        thumb_rel = f"bing-320-{mkt}-{year}/{thumb_file}"
+        uhd_rel = f"bing-UHD-{mkt}-{year}/{uhd_file}"
+
+        # 缩略图走 jsdelivr CDN
+        cdn_thumb = (f"https://cdn.jsdelivr.net/gh/bingmen/bing-UHD-{year}"
+                     f"@main/bing-320-{mkt}-{year}/{thumb_file}")
+
+        row = (f"| {enddate_fmt} | {title} | {copyright_} | "
+               f"[![{thumb_file}]({cdn_thumb})]({cdn_thumb}) | "
+               f"[UHD]({uhd_rel}) |")
+        lines.append(row)
+
+    md_path = f"bing-UHD-{mkt}-{year}.md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[{mkt} {year}] 已生成 {md_path}")
+
+
+def main():
+    # 找到所有 bing-JSON-{mkt}-{year}.json
+    pattern = re.compile(r"^bing-JSON-([A-Za-z]{2}-[A-Za-z]{2})-(\d{4})\.json$")
+    found = []
+    for path in glob.glob("bing-JSON-*-*.json"):
+        m = pattern.match(os.path.basename(path))
+        if not m:
+            continue
+        mkt, year = m.group(1), m.group(2)
+        if mkt not in MKTS:
+            print(f"跳过未知 mkt: {path}")
+            continue
+        found.append((mkt, year, path))
+
+    if not found:
+        print("未找到任何 bing-JSON-{mkt}-{year}.json 文件")
         return
 
-    data = json.loads(json_path.read_text(encoding="utf-8")).get("data", [])
-    print(f"[{mkt}] {len(data)} entries")
-
-    uhd_dir = root / f"bing-UHD-{mkt}-{year}"
-    thumb_dir = root / f"bing-320-{mkt}-{year}"
-    uhd_dir.mkdir(exist_ok=True)
-    thumb_dir.mkdir(exist_ok=True)
-
-    rows = []
-    for item in data:
-        start = item["startdate"]            # YYYYMMDD (image date)
-        end = item["enddate"]                # YYYYMMDD (display date)
-        ymd = start
-        title = item.get("title", "")
-        copyright_ = item.get("copyright", "")
-        urlbase = item.get("urlbase", "")
-        if not urlbase:
-            continue
-
-        uhd_name = f"{ymd}_{slug(title)}_UHD_{mkt}.jpg"
-        thumb_name = f"{ymd}_320_{mkt}.jpg"
-
-        download(BING + urlbase + UHD_PARAMS, uhd_dir / uhd_name)
-        download(BING + urlbase + THUMB_PARAMS, thumb_dir / thumb_name)
-
-        date_str = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
-        thumb_url = f"{CDN.format(year=year)}/bing-320-{mkt}-{year}/{thumb_name}"
-        uhd_url = f"{CDN.format(year=year)}/bing-UHD-{mkt}-{year}/{uhd_name}"
-
-        rows.append((date_str, title, copyright_, thumb_url, uhd_url))
-
-    # date descending (JSON is already descending, but enforce it)
-    rows.sort(key=lambda r: r[0], reverse=True)
-
-    md = []
-    md.append(f"# {H1[mkt]} – UHD - {mkt} - {year}")
-    md.append("")
-    md.append(f"> {LAST_UPDATED[mkt]}：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    md.append("")
-    md.append(TABLE_HEADERS[mkt])
-    md.append(SEP)
-    for date_str, title, copyright_, thumb_url, uhd_url in rows:
-        md.append(
-            f"| {date_str} | {title} | {copyright_} "
-            f"| ![{date_str}]({thumb_url}) | [UHD 高清图]({uhd_url}) |"
-        )
-    md.append("")
-
-    out = root / f"bing-UHD-{mkt}-{year}.md"
-    out.write_text("\n".join(md), encoding="utf-8")
-    print(f"[{mkt}] wrote {out.name} ({len(rows)} rows)")
-
-
-def main() -> int:
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
-    years = [int(y) for y in sys.argv[2:]] or [2025]
-    for year in years:
-        for mkt in MKTS:
-            process(mkt, year, root)
-    return 0
+    found.sort()
+    for mkt, year, path in found:
+        try:
+            process_mkt_year(mkt, year, path)
+        except Exception as e:
+            print(f"[错误] 处理 {path} 失败: {e}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
