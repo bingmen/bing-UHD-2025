@@ -1,0 +1,148 @@
+# bing-JSON-single.yml
+# github.com/shenjuexiao
+# 20261021
+
+# .github/workflows/bing-JSON-single.yml
+name: bing-JSON-single
+
+on:
+  push:
+    paths:
+      - 'bing-JSON-*.json'
+      - 'bing-JSON-single.py'
+      - '.github/workflows/bing-JSON-single.yml'
+  workflow_dispatch:
+    inputs:
+      mkt:
+        description: '市场代码（留空则运行全部）'
+        required: false
+        default: ''
+      year:
+        description: '年份（留空则处理该 mkt 全部年份）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  # 计算需要运行的 (mkt, year) 组合
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - id: gen
+        shell: bash
+        run: |
+          MKTS="de-DE en-CA en-GB en-IN en-US fr-FR it-IT ja-JP zh-CN"
+          INPUT_MKT="${{ github.event.inputs.mkt }}"
+          INPUT_YEAR="${{ github.event.inputs.year }}"
+
+          ITEMS=()
+          if [ -n "$INPUT_MKT" ]; then
+            # 手动指定 mkt
+            if [ -n "$INPUT_YEAR" ]; then
+              ITEMS+=("{\"mkt\":\"$INPUT_MKT\",\"year\":\"$INPUT_YEAR\"}")
+            else
+              for f in bing-JSON-$INPUT_MKT-*.json; do
+                [ -e "$f" ] || continue
+                y=$(echo "$f" | sed -E 's/.*-([0-9]{4})\.json$/\1/')
+                ITEMS+=("{\"mkt\":\"$INPUT_MKT\",\"year\":\"$y\"}")
+              done
+            fi
+          else
+            # 自动扫描所有存在的 json
+            for mkt in $MKTS; do
+              for f in bing-JSON-$mkt-*.json; do
+                [ -e "$f" ] || continue
+                y=$(echo "$f" | sed -E 's/.*-([0-9]{4})\.json$/\1/')
+                ITEMS+=("{\"mkt\":\"$mkt\",\"year\":\"$y\"}")
+              done
+            done
+          fi
+
+          if [ ${#ITEMS[@]} -eq 0 ]; then
+            MATRIX='{"include":[]}'
+          else
+            JOINED=$(IFS=,; echo "${ITEMS[*]}")
+            MATRIX="{\"include\":[$JOINED]}"
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $MATRIX"
+
+  # 每个 (mkt, year) 一个并行任务
+  process:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.matrix != '{"include":[]}' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Increase Git buffer (500MB)
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.version HTTP/1.1
+
+      - name: Run bing-JSON-single.py (${{ matrix.mkt }} ${{ matrix.year }})
+        run: python bing-JSON-single.py "${{ matrix.mkt }}" "${{ matrix.year }}"
+
+      - name: Commit & Push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MKT="${{ matrix.mkt }}"
+          YEAR="${{ matrix.year }}"
+
+          FILES=()
+          while IFS= read -r -d '' f; do
+            [ -n "$f" ] && FILES+=("$f")
+          done < <(find . -maxdepth 1 \
+                    \( -name "bing-UHD-${MKT}-${YEAR}.md" \
+                       -o -path "./bing-UHD-${MKT}-${YEAR}/*" \
+                       -o -path "./bing-320-${MKT}-${YEAR}/*" \) -print0 2>/dev/null || true)
+
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No target files, skip"
+            exit 0
+          fi
+
+          # 拉取最新，避免与并行 job 冲突
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+
+          BATCH=20
+          TOTAL=${#FILES[@]}
+          for ((i=0; i<TOTAL; i+=BATCH)); do
+            CHUNK=("${FILES[@]:i:BATCH}")
+            CLEAN=()
+            for x in "${CHUNK[@]}"; do
+              [ -n "$x" ] && CLEAN+=("$x")
+            done
+            [ ${#CLEAN[@]} -eq 0 ] && continue
+
+            git add -- "${CLEAN[@]}"
+            if git diff --cached --quiet; then
+              echo "Batch $((i/BATCH+1)): no changes"
+              continue
+            fi
+            git commit -m "chore(${MKT}-${YEAR}): bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
+          done
