@@ -6,59 +6,43 @@
 name: bing-JSON-all
 
 on:
-  # schedule:
-    # - cron: "0 22 * * *"   # daily 22:00 UTC (after Bing rollover)
+  push:
+    paths:
+      - 'bing-JSON-*.json'
+      - 'bing-JSON-all.py'
+      - '.github/workflows/bing-JSON-all.yml'
   workflow_dispatch:
-    inputs:
-      years:
-        description: "Years to process (space-separated)"
-        required: false
-        default: "2025"
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  process:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        mkt: ["de-DE", "en-CA", "en-GB", "en-IN", "en-US",
-              "fr-FR", "it-IT", "ja-JP", "zh-CN"]
+    timeout-minutes: 120
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          python-version: "3.12"
+          fetch-depth: 0
 
-      - name: Install deps
-        run: pip install requests
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Fetch JSON (per market/year)
+      - name: Run bing-JSON-all.py
+        run: python bing-JSON-all.py
+
+      - name: Commit & Push
         run: |
-          YEAR="${{ github.event.inputs.years || '2025' }}"
-          YEAR="${YEAR%% *}"
-          URL="https://raw.onmicrosoft.cn/Bing-Wallpaper-Action/main/data/bing-JSON-${{ matrix.mkt }}-${YEAR}.json"
-          echo "Fetching $URL"
-          curl -fsSL "$URL" -o "bing-JSON-${{ matrix.mkt }}-${YEAR}.json" || echo "no JSON for ${{ matrix.mkt }} ${YEAR}"
-
-      - name: Download images & build Markdown
-        run: |
-          YEAR="${{ github.event.inputs.years || '2025' }}"
-          YEAR="${YEAR%% *}"
-          python bing-JSON-all.py . "$YEAR"
-
-      - name: Commit & push
-        run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "bing-JSON-${{ matrix.mkt }}-"*.json \
-                  "bing-UHD-${{ matrix.mkt }}-"* "bing-320-${{ matrix.mkt }}-"* || true
+          git add bing-UHD-* bing-320-* "bing-UHD-*.md"
           if git diff --cached --quiet; then
-            echo "nothing to commit"
+            echo "No changes to commit"
           else
-            git commit -m "chore(${{ matrix.mkt }}): update Bing wallpapers"
+            git commit -m "chore: update bing wallpapers $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
             git push
           fi
