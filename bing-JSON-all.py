@@ -128,10 +128,15 @@ def download_image(url: str, dest: Path, retries: int = 3) -> bool:
 # ---------------------------------------------------------------- 主流程
 
 def process_item(item: dict, mkt: str, year: str,
-                 uhd_dir: Path, thumb_dir: Path) -> dict:
-    """处理单条 JSON 记录，返回 Markdown 行所需信息。"""
+                 uhd_dir: Path, thumb_dir: Path):
+    """处理单条 JSON 记录，返回 Markdown 行所需信息。
+
+    统一使用 enddate 作为"日期"（文件名、表格显示、排序均以此为准），
+    若 enddate 缺失则回退到 startdate。
+    """
     startdate = item.get("startdate", "")
-    enddate = item.get("enddate", startdate)   # 若缺失则回退 startdate
+    # 优先使用 enddate；缺失或为空时回退到 startdate
+    date_key = item.get("enddate") or startdate
     title = item.get("title", "")
     copyright_ = item.get("copyright", "")
     url_path = item.get("url", "")
@@ -143,8 +148,7 @@ def process_item(item: dict, mkt: str, year: str,
     uhd_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', 'UHD.jpg')}"
     thumb_url = f"{BING_BASE}{base_url_path.replace('1920x1080.jpg', '320x240.jpg')}"
 
-    # 统一使用 enddate 作为文件名日期（图片与表格一致）
-    date_key = enddate or startdate
+    # 文件名统一使用 date_key
     safe_title = sanitize_title(title)
     uhd_name = f"{date_key}_{safe_title}_UHD_{mkt}.jpg"
     thumb_name = f"{date_key}_320_{mkt}.jpg"
@@ -152,14 +156,17 @@ def process_item(item: dict, mkt: str, year: str,
     uhd_dest = uhd_dir / uhd_name
     thumb_dest = thumb_dir / thumb_name
 
-    # 下载 UHD，若失败则回退到 1920x1080
+    # 下载 UHD，若失败则回退到 1920x1080；记录实际使用的 URL
     uhd_ok = download_image(uhd_url, uhd_dest)
+    used_uhd_url = uhd_url
     if not uhd_ok:
         print(f"  [回退] UHD 不存在，尝试 1920x1080：{date_key}")
         fallback_url = f"{BING_BASE}{base_url_path}"
+        used_uhd_url = fallback_url
         uhd_ok = download_image(fallback_url, uhd_dest)
         if not uhd_ok:
             print(f"  [跳过] UHD 与 1920x1080 均无法下载：{date_key}")
+            used_uhd_url = None
 
     # 下载缩略图
     thumb_ok = download_image(thumb_url, thumb_dest)
@@ -175,19 +182,13 @@ def process_item(item: dict, mkt: str, year: str,
     # 缩略图链接（CDN）
     cdn_thumb = f"{CDN_BASE.format(year=year)}/bing-320-{mkt}-{year}/{thumb_name}"
 
-    # UHD 链接文字：ww.bing.com/th?id=
-    uhd_id = ""
-    if "id=" in base_url_path:
-        uhd_id = base_url_path.split("id=", 1)[1]
-    uhd_link_text = f"ww.bing.com/th?id={uhd_id}"
-
     return {
-        "startdate": date_key,          # 用于排序，统一为 enddate
+        "date_key": date_key,
         "date_display": date_display,
         "title": title,
         "copyright": copyright_,
         "cdn_thumb": cdn_thumb,
-        "uhd_link_text": uhd_link_text,
+        "used_uhd_url": used_uhd_url,
     }
 
 
@@ -235,8 +236,9 @@ def main() -> int:
     results = []
     for idx, item in enumerate(data, 1):
         startdate = item.get("startdate", "")
+        enddate = item.get("enddate") or startdate
         title = item.get("title", "")
-        print(f"[{idx}/{len(data)}] {startdate} - {title}")
+        print(f"[{idx}/{len(data)}] {enddate} - {title}")
         try:
             row = process_item(item, mkt, year, uhd_dir, thumb_dir)
         except Exception as e:  # noqa: BLE001
@@ -245,8 +247,8 @@ def main() -> int:
         if row:
             results.append(row)
 
-    # 按日期倒序（date_key 已统一为 enddate）
-    results.sort(key=lambda r: r["startdate"], reverse=True)
+    # 按日期（enddate）倒序
+    results.sort(key=lambda r: r["date_key"], reverse=True)
 
     # 生成 Markdown
     md_lines = []
@@ -259,10 +261,15 @@ def main() -> int:
     md_lines.append(TABLE_SEPARATOR)
 
     for r in results:
+        # 第 5 列：链接文字固定为 UHD，链接指向实际下载地址（UHD 或回退的 1920x1080）
+        if r["used_uhd_url"]:
+            uhd_cell = f"[UHD]({r['used_uhd_url']})"
+        else:
+            uhd_cell = "UHD"
         md_lines.append(
             f"| {r['date_display']} | {r['title']} | {r['copyright']} "
             f"| [![Thumb]({r['cdn_thumb']})]({r['cdn_thumb']}) "
-            f"| [{r['uhd_link_text']}](https://{r['uhd_link_text']}) |"
+            f"| {uhd_cell} |"
         )
 
     md_path = out_root / f"bing-UHD-{mkt}-{year}.md"
@@ -276,5 +283,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
