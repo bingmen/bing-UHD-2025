@@ -26,37 +26,55 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # 临时调大 Git 缓冲区至 500MB
+      - name: Increase Git buffer (500MB)
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.version HTTP/1.1
+
       - name: Run bing-JSON-all.py
         run: python bing-JSON-all.py
 
-      - name: Commit & Push (Git LFS)
+      # 分次传输：分批 add + commit，降低单次 push 体积
+      - name: Commit & Push (batched)
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 安装并初始化 Git LFS
-          git lfs install
+          # 收集目标文件
+          mapfile -t FILES < <(ls -1 bing-UHD-* bing-320-* "bing-UHD-"*.md 2>/dev/null || true)
 
-          # 配置需要 LFS 跟踪的文件类型
-          git lfs track "bing-UHD-*"
-          git lfs track "bing-320-*"
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No target files found"
+            exit 0
+          fi
 
-          # 确保 .gitattributes 被提交
-          git add .gitattributes
+          # 每批 30 个文件提交并推送一次
+          BATCH=30
+          TOTAL=${#FILES[@]}
+          for ((i=0; i<TOTAL; i+=BATCH)); do
+            CHUNK=("${FILES[@]:i:BATCH}")
+            git add -- "${CHUNK[@]}"
+            if git diff --cached --quiet; then
+              echo "Batch $((i/BATCH+1)): no changes"
+              continue
+            fi
+            git commit -m "chore: update bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git push
+            echo "Batch $((i/BATCH+1)) pushed (${#CHUNK[@]} files)"
+          done
 
-          # 添加目标文件
-          git add bing-UHD-* bing-320-* "bing-UHD-*.md"
-
+          # 兜底：提交剩余未被 add 的变更
+          git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No remaining changes"
           else
-            git commit -m "chore: update bing wallpapers $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git commit -m "chore: update bing wallpapers (final) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
             git push
           fi
