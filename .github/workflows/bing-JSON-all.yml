@@ -1,3 +1,8 @@
+# bing-JSON-all.yml
+# github.com/shenjuexiao
+# 20261021
+
+# .github/workflows/bing-JSON-all.yml
 name: bing-JSON-all
 
 on:

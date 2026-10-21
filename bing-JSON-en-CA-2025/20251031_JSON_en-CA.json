@@ -1,28 +1,17 @@
 {
-  "LastUpdate": "2026-10-20 05:08:48",
-  "Total": 1,
-  "Language": "en-CA",
-  "message": "ok",
-  "status": true,
-  "success": true,
-  "info": "https://raw.onmicrosoft.cn/Bing-Wallpaper-Action/main/data/info.json",
-  "data": [
-    {
-      "startdate": "20251030",
-      "fullstartdate": "202510300400",
-      "enddate": "20251031",
-      "url": "/th?id=OHR.PushkarFair_EN-CA8887755695_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
-      "urlbase": "/th?id=OHR.PushkarFair_EN-CA8887755695",
-      "copyright": "Camels at Jaisalmer, Rajasthan, India (© f9photos/Getty Images)",
-      "copyrightlink": "https://www.bing.com/search?q=Pushkar+Camel+Fair&form=hpcapt&filters=HpDate%3a%2220251030_0400%22",
-      "title": "Hooves, hues and heritage",
-      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20251030_PushkarFair%22&FORM=HPQUIZ",
-      "wp": true,
-      "hsh": "332e5d5cdf99e56a9dfe0738dac72018",
-      "drk": 1,
-      "top": 1,
-      "bot": 1,
-      "hs": []
-    }
-  ]
+  "startdate": "20251030",
+  "fullstartdate": "202510300400",
+  "enddate": "20251031",
+  "url": "/th?id=OHR.PushkarFair_EN-CA8887755695_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+  "urlbase": "/th?id=OHR.PushkarFair_EN-CA8887755695",
+  "copyright": "Camels at Jaisalmer, Rajasthan, India (© f9photos/Getty Images)",
+  "copyrightlink": "https://www.bing.com/search?q=Pushkar+Camel+Fair&form=hpcapt&filters=HpDate%3a%2220251030_0400%22",
+  "title": "Hooves, hues and heritage",
+  "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20251030_PushkarFair%22&FORM=HPQUIZ",
+  "wp": true,
+  "hsh": "332e5d5cdf99e56a9dfe0738dac72018",
+  "drk": 1,
+  "top": 1,
+  "bot": 1,
+  "hs": []
 }

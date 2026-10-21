@@ -1,3 +1,8 @@
+# bing-JSON-all.py
+# github.com/shenjuexiao
+# 20261021
+
+# bing-JSON-all.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """

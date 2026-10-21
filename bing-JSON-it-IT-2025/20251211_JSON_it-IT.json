@@ -1,28 +1,17 @@
 {
-  "LastUpdate": "2026-10-20 05:09:05",
-  "Total": 1,
-  "Language": "it-IT",
-  "message": "ok",
-  "status": true,
-  "success": true,
-  "info": "https://raw.onmicrosoft.cn/Bing-Wallpaper-Action/main/data/info.json",
-  "data": [
-    {
-      "startdate": "20251210",
-      "fullstartdate": "202512102300",
-      "enddate": "20251211",
-      "url": "/th?id=OHR.EverestGlow_IT-IT0574844074_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
-      "urlbase": "/th?id=OHR.EverestGlow_IT-IT0574844074",
-      "copyright": "La vetta del Monte Everest al tramonto, vista da Renjo La, Nepal (© shoults/Alamy)",
-      "copyrightlink": "https://www.bing.com/search?q=Una+montagna&form=hpcapt",
-      "title": "Bacio tra Cielo e Terra",
-      "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20251210_EverestGlow%22&FORM=HPQUIZ",
-      "wp": true,
-      "hsh": "d700ff23a58aff04d3f87c3ad0440f37",
-      "drk": 1,
-      "top": 1,
-      "bot": 1,
-      "hs": []
-    }
-  ]
+  "startdate": "20251210",
+  "fullstartdate": "202512102300",
+  "enddate": "20251211",
+  "url": "/th?id=OHR.EverestGlow_IT-IT0574844074_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp",
+  "urlbase": "/th?id=OHR.EverestGlow_IT-IT0574844074",
+  "copyright": "La vetta del Monte Everest al tramonto, vista da Renjo La, Nepal (© shoults/Alamy)",
+  "copyrightlink": "https://www.bing.com/search?q=Una+montagna&form=hpcapt",
+  "title": "Bacio tra Cielo e Terra",
+  "quiz": "/search?q=Bing+homepage+quiz&filters=WQOskey:%22HPQuiz_20251210_EverestGlow%22&FORM=HPQUIZ",
+  "wp": true,
+  "hsh": "d700ff23a58aff04d3f87c3ad0440f37",
+  "drk": 1,
+  "top": 1,
+  "bot": 1,
+  "hs": []
 }
