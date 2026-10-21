@@ -47,30 +47,41 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 收集目标文件
-          mapfile -t FILES < <(ls -1 bing-UHD-* bing-320-* "bing-UHD-"*.md 2>/dev/null || true)
+          # 用 find 收集目标文件，按 NUL 分隔，过滤空项，避免空 pathspec
+          FILES=()
+          while IFS= read -r -d '' f; do
+            [ -n "$f" ] && FILES+=("$f")
+          done < <(find . -maxdepth 1 -type f \
+                    \( -name 'bing-UHD-*' -o -name 'bing-320-*' -o -name 'bing-UHD-*.md' \) \
+                    -print0 2>/dev/null || true)
 
           if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No target files found"
-            exit 0
+            echo "No target files found, skip"
+          else
+            BATCH=20
+            TOTAL=${#FILES[@]}
+            echo "Total files: $TOTAL, batch size: $BATCH"
+            for ((i=0; i<TOTAL; i+=BATCH)); do
+              CHUNK=("${FILES[@]:i:BATCH}")
+              # 二次防御：剔除空串
+              CLEAN=()
+              for x in "${CHUNK[@]}"; do
+                [ -n "$x" ] && CLEAN+=("$x")
+              done
+              [ ${#CLEAN[@]} -eq 0 ] && continue
+
+              git add -- "${CLEAN[@]}"
+              if git diff --cached --quiet; then
+                echo "Batch $((i/BATCH+1)): no changes"
+                continue
+              fi
+              git commit -m "chore: update bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+              git push
+              echo "Batch $((i/BATCH+1)) pushed (${#CLEAN[@]} files)"
+            done
           fi
 
-          # 每批 30 个文件提交并推送一次
-          BATCH=30
-          TOTAL=${#FILES[@]}
-          for ((i=0; i<TOTAL; i+=BATCH)); do
-            CHUNK=("${FILES[@]:i:BATCH}")
-            git add -- "${CHUNK[@]}"
-            if git diff --cached --quiet; then
-              echo "Batch $((i/BATCH+1)): no changes"
-              continue
-            fi
-            git commit -m "chore: update bing wallpapers (batch $((i/BATCH+1))) $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
-            git push
-            echo "Batch $((i/BATCH+1)) pushed (${#CHUNK[@]} files)"
-          done
-
-          # 兜底：提交剩余未被 add 的变更
+          # 兜底：提交剩余变更（如删除项、其他文件）
           git add -A
           if git diff --cached --quiet; then
             echo "No remaining changes"
