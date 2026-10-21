@@ -7,13 +7,15 @@
 # -*- coding: utf-8 -*-
 
 """
-处理单个 mkt 的 Bing 壁纸：
-  python bing-JSON-single.py <mkt> [year]
-
-根据 bing-JSON-{mkt}-{year}.json 数据
+单市场版本：根据指定的 mkt 处理 bing-JSON-{mkt}-{year}.json
 下载 UHD 高清图到 bing-UHD-{mkt}-{year}/ 目录
 下载 320x240 缩略图到 bing-320-{mkt}-{year}/ 目录
-按照 {mkt}，生成 bing-UHD-{mkt}-{year}.md
+图片命名：YYYYMMDD_title_UHD_{mkt}.jpg / YYYYMMDD_320_{mkt}.jpg
+生成 bing-UHD-{mkt}-{year}.md
+
+用法：
+    python bing-JSON-single.py <mkt>
+    python bing-JSON-single.py zh-CN
 """
 
 import os
@@ -81,12 +83,14 @@ RETRY = 3
 
 # ---------------- 工具函数 ----------------
 def sanitize_filename(name: str) -> str:
+    """把 title 处理为安全文件名"""
     name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "", name)
     name = re.sub(r"\s+", "-", name.strip())
     return name[:80] if name else "untitled"
 
 
 def http_download(url: str, dest: str) -> bool:
+    """下载 url 到 dest，带重试"""
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         return True
     for attempt in range(1, RETRY + 1):
@@ -103,6 +107,7 @@ def http_download(url: str, dest: str) -> bool:
 
 
 def build_urls(item: dict):
+    """从 JSON item 构造 缩略图 与 UHD 的 URL"""
     base = item.get("urlbase", "")
     if not base:
         return None, None
@@ -112,6 +117,7 @@ def build_urls(item: dict):
 
 
 def format_date(enddate: str) -> str:
+    """'20261020' -> '2026-10-20'"""
     try:
         return datetime.datetime.strptime(enddate, "%Y%m%d").strftime("%Y-%m-%d")
     except Exception:
@@ -120,6 +126,7 @@ def format_date(enddate: str) -> str:
 
 # ---------------- 主流程 ----------------
 def process_mkt_year(mkt: str, year: str, json_path: str):
+    """处理单个 mkt + year"""
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -131,7 +138,8 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
     os.makedirs(uhd_dir, exist_ok=True)
     os.makedirs(thumb_dir, exist_ok=True)
 
-    tasks = []
+    # 下载任务
+    tasks = []  # (url, dest)
     for item in items:
         sd = item.get("startdate", "")
         if not sd.startswith(year):
@@ -145,6 +153,7 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
         if uhd_url:
             tasks.append((uhd_url, os.path.join(uhd_dir, uhd_name)))
 
+    # 并行下载
     ok, fail = 0, 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(http_download, url, dest) for url, dest in tasks]
@@ -155,6 +164,7 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
                 fail += 1
     print(f"[{mkt} {year}] 下载完成: 成功 {ok}, 失败 {fail}")
 
+    # 生成 Markdown
     lines = []
     lines.append(f"# {H1[mkt]} – UHD - {mkt} - {year}")
     lines.append("")
@@ -163,6 +173,7 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
     lines.append(TABLE_HEADERS[mkt])
     lines.append(TABLE_SEPARATOR)
 
+    # 按 enddate 倒序
     sorted_items = sorted(
         [x for x in items if x.get("startdate", "").startswith(year)],
         key=lambda x: x.get("enddate", ""),
@@ -182,6 +193,7 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
         thumb_rel = f"bing-320-{mkt}-{year}/{thumb_file}"
         uhd_rel = f"bing-UHD-{mkt}-{year}/{uhd_file}"
 
+        # 缩略图走 jsdelivr CDN
         cdn_thumb = (f"https://cdn.jsdelivr.net/gh/bingmen/bing-UHD-{year}"
                      f"@main/bing-320-{mkt}-{year}/{thumb_file}")
 
@@ -196,46 +208,35 @@ def process_mkt_year(mkt: str, year: str, json_path: str):
     print(f"[{mkt} {year}] 已生成 {md_path}")
 
 
-def find_json(mkt: str, year: str = None):
-    """查找该 mkt 对应的 json（year 可选，缺省取所有年份）"""
+def main():
+    if len(sys.argv) < 2:
+        print(f"用法: python {sys.argv[0]} <mkt>")
+        print(f"可选 mkt: {', '.join(MKTS)}")
+        sys.exit(1)
+
+    mkt = sys.argv[1]
+    if mkt not in MKTS:
+        print(f"未知 mkt: {mkt}")
+        print(f"可选 mkt: {', '.join(MKTS)}")
+        sys.exit(1)
+
+    # 找到该 mkt 所有 bing-JSON-{mkt}-{year}.json
     pattern = re.compile(rf"^bing-JSON-{re.escape(mkt)}-(\d{{4}})\.json$")
-    results = []
+    found = []
     for path in glob.glob(f"bing-JSON-{mkt}-*.json"):
         m = pattern.match(os.path.basename(path))
         if not m:
             continue
-        y = m.group(1)
-        if year and y != year:
-            continue
-        results.append((y, path))
-    results.sort()
-    return results
+        found.append((m.group(1), path))
 
-
-def main():
-    if len(sys.argv) < 2:
-        print("用法: python bing-JSON-single.py <mkt> [year]")
-        print("示例: python bing-JSON-single.py zh-CN")
-        print("      python bing-JSON-single.py en-US 2026")
-        print(f"可用 mkt: {', '.join(MKTS)}")
-        sys.exit(1)
-
-    mkt = sys.argv[1]
-    year = sys.argv[2] if len(sys.argv) > 2 else None
-
-    if mkt not in MKTS:
-        print(f"未知 mkt: {mkt}")
-        print(f"可用 mkt: {', '.join(MKTS)}")
-        sys.exit(1)
-
-    found = find_json(mkt, year)
     if not found:
-        print(f"未找到 bing-JSON-{mkt}-{year or '*'}.json")
-        sys.exit(0)
+        print(f"未找到任何 bing-JSON-{mkt}-{{year}}.json 文件")
+        return
 
-    for y, path in found:
+    found.sort()
+    for year, path in found:
         try:
-            process_mkt_year(mkt, y, path)
+            process_mkt_year(mkt, year, path)
         except Exception as e:
             print(f"[错误] 处理 {path} 失败: {e}")
 
