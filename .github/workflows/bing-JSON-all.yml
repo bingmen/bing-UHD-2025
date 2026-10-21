@@ -1,6 +1,6 @@
-# bing-JSON-all.yml
+# bing-JSON-all-0.1.0.yml
 # github.com/shenjuexiao
-# 20261021
+# 20261023
 
 # .github/workflows/bing-JSON-all.yml
 name: bing-JSON-all
@@ -8,21 +8,6 @@ name: bing-JSON-all
 on:
   workflow_dispatch:
     inputs:
-      mkt:
-        description: "市场 (market)"
-        required: true
-        default: "zh-CN"
-        type: choice
-        options:
-          - de-DE
-          - en-CA
-          - en-GB
-          - en-IN
-          - en-US
-          - fr-FR
-          - it-IT
-          - ja-JP
-          - zh-CN
       year:
         description: "年份 (year)"
         required: true
@@ -33,14 +18,29 @@ permissions:
   contents: write
 
 concurrency:
-  group: bing-JSON-all-${{ inputs.mkt }}-${{ inputs.year }}
+  group: bing-JSON-all-${{ inputs.year }}
   cancel-in-progress: false
 
 jobs:
   download-and-build:
-    name: Download UHD & Build Markdown (${{ inputs.mkt }} / ${{ inputs.year }})
+    name: Download UHD & Build Markdown (${{ matrix.mkt }} / ${{ inputs.year }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
+    strategy:
+      fail-fast: false          # 某个市场失败不影响其他市场继续
+      max-parallel: 1           # 串行执行，避免并发 push 冲突；如需提速可改为 3
+      matrix:
+        mkt:
+          - de-DE
+          - en-CA
+          - en-GB
+          - en-IN
+          - en-US
+          - fr-FR
+          - it-IT
+          - ja-JP
+          - zh-CN
 
     steps:
       - name: Checkout repository
@@ -60,13 +60,13 @@ jobs:
 
       - name: Verify JSON input exists
         run: |
-          test -f "bing-JSON-${{ inputs.mkt }}-${{ inputs.year }}.json" \
-            || (echo "::error::缺少 bing-JSON-${{ inputs.mkt }}-${{ inputs.year }}.json" && exit 1)
+          test -f "bing-JSON-${{ matrix.mkt }}-${{ inputs.year }}.json" \
+            || (echo "::error::缺少 bing-JSON-${{ matrix.mkt }}-${{ inputs.year }}.json" && exit 1)
 
       - name: Run download script
         run: |
           python bing-JSON-all.py \
-            --mkt "${{ inputs.mkt }}" \
+            --mkt "${{ matrix.mkt }}" \
             --year "${{ inputs.year }}"
 
       - name: Commit and push changes
@@ -74,14 +74,21 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add "bing-UHD-${{ inputs.mkt }}-${{ inputs.year }}" \
-                  "bing-320-${{ inputs.mkt }}-${{ inputs.year }}" \
-                  "bing-UHD-${{ inputs.mkt }}-${{ inputs.year }}.md" || true
+          git add "bing-UHD-${{ matrix.mkt }}-${{ inputs.year }}" \
+                  "bing-320-${{ matrix.mkt }}-${{ inputs.year }}" \
+                  "bing-UHD-${{ matrix.mkt }}-${{ inputs.year }}.md" || true
 
           if git diff --cached --quiet; then
             echo "没有变更需要提交。"
             exit 0
           fi
 
-          git commit -m "chore: update bing UHD ${{ inputs.mkt }} ${{ inputs.year }} ($(date -u +'%Y-%m-%d %H:%M:%S') UTC)"
-          git push origin HEAD
+          git commit -m "chore: update bing UHD ${{ matrix.mkt }} ${{ inputs.year }} ($(date -u +'%Y-%m-%d %H:%M:%S') UTC)"
+
+          # 带重试的 push，避免串行时因远端更新导致的 non-fast-forward
+          for i in 1 2 3 4 5; do
+            git push origin HEAD && break
+            echo "push 失败，第 $i 次重试……"
+            git pull --rebase origin HEAD || true
+            sleep 5
+          done
